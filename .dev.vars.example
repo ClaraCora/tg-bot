@@ -1,0 +1,12 @@
+# Telegram Bot Token (从 @BotFather 获取)
+BOT_TOKEN=your_telegram_bot_token_here
+
+# 搬瓦工 API Key (从 Client Area -> API 获取)
+BWH_API_KEY=your_bandwagonhost_api_key_here
+
+# 搬瓦工 VPS ID (从 Client Area 获取)
+BWH_VEID=your_vps_id_here
+
+# Telegram 用户 ID (允许使用此 Bot 的用户 ID)
+# 可以通过 @userinfobot 获取你的用户 ID
+ALLOWED_USER_ID=your_telegram_user_id_here
