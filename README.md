@@ -43,7 +43,7 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/tg-bot.git
+git clone https://github.com/ClaraCora/tg-bot.git
 cd tg-bot
 ```
 
