@@ -1,19 +1,19 @@
 import { TelegramAPI, isAuthorized } from './utils/telegram';
 import { handleExchangeCommand, handleExchangeCallback, handleExchangeAmount } from './handlers/exchange';
 import { handleBWHCommand } from './handlers/bwh';
-// 已禁用 reminder 功能以节省 KV 配额
-// import {
-//   handleReminderCommand,
-//   handleAddReminder,
-//   handleTimeTypeSelection,
-//   handleReminderTimeInput,
-//   handleRepeatTypeSelection,
-//   handleReminderMessageInput,
-//   handleListReminders,
-//   handleDeleteReminderPrompt,
-//   handleDeleteReminderConfirm,
-//   checkAndSendReminders,
-// } from './handlers/reminder';
+// 提醒功能（优化版：使用时间索引，每15分钟检查）
+import {
+  handleReminderCommand,
+  handleAddReminder,
+  handleTimeTypeSelection,
+  handleReminderTimeInput,
+  handleRepeatTypeSelection,
+  handleReminderMessageInput,
+  handleListReminders,
+  handleDeleteReminderPrompt,
+  handleDeleteReminderConfirm,
+  checkAndSendReminders,
+} from './handlers/reminder';
 import { Env, TelegramUpdate } from './types';
 
 export default {
@@ -54,8 +54,7 @@ export default {
           { command: 'help', description: '显示帮助信息' },
           { command: 'exchange', description: '汇率转换（美元、欧元、加元）' },
           { command: 'vps', description: '查询搬瓦工 VPS 状态' },
-          // 已禁用提醒功能以节省 KV 配额
-          // { command: 'reminder', description: '提醒事项管理' },
+          { command: 'reminder', description: '提醒事项管理（优化版）' },
         ];
 
         // 设置命令列表
@@ -95,14 +94,14 @@ export default {
     return new Response('Not Found', { status: 404 });
   },
 
-  // Cron Trigger - 已禁用定时提醒功能以节省 KV 配额
-  // async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-  //   try {
-  //     await checkAndSendReminders(env);
-  //   } catch (error) {
-  //     console.error('Error in scheduled task:', error);
-  //   }
-  // },
+  // Cron Trigger - 每15分钟检查提醒（优化版，节省 KV 配额）
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    try {
+      await checkAndSendReminders(env);
+    } catch (error) {
+      console.error('Error in scheduled task:', error);
+    }
+  },
 };
 
 async function handleUpdate(update: TelegramUpdate, env: Env): Promise<void> {
@@ -136,45 +135,45 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<void> {
       return;
     }
 
-    // 已禁用提醒相关回调处理以节省 KV 配额
-    // if (data === 'rem_add') {
-    //   await handleAddReminder(api, chatId, messageId, userId);
-    //   await api.answerCallbackQuery(callback_query.id);
-    //   return;
-    // }
+    // 提醒相关回调处理
+    if (data === 'rem_add') {
+      await handleAddReminder(api, chatId, messageId, userId);
+      await api.answerCallbackQuery(callback_query.id);
+      return;
+    }
 
-    // if (data === 'rem_list') {
-    //   await handleListReminders(api, chatId, messageId, userId, env);
-    //   await api.answerCallbackQuery(callback_query.id);
-    //   return;
-    // }
+    if (data === 'rem_list') {
+      await handleListReminders(api, chatId, messageId, userId, env);
+      await api.answerCallbackQuery(callback_query.id);
+      return;
+    }
 
-    // if (data === 'rem_delete') {
-    //   await handleDeleteReminderPrompt(api, chatId, messageId, userId, env);
-    //   await api.answerCallbackQuery(callback_query.id);
-    //   return;
-    // }
+    if (data === 'rem_delete') {
+      await handleDeleteReminderPrompt(api, chatId, messageId, userId, env);
+      await api.answerCallbackQuery(callback_query.id);
+      return;
+    }
 
-    // if (data === 'rem_time_absolute' || data === 'rem_time_relative') {
-    //   const timeType = data === 'rem_time_absolute' ? 'absolute' : 'relative';
-    //   await handleTimeTypeSelection(api, chatId, messageId, userId, timeType);
-    //   await api.answerCallbackQuery(callback_query.id);
-    //   return;
-    // }
+    if (data === 'rem_time_absolute' || data === 'rem_time_relative') {
+      const timeType = data === 'rem_time_absolute' ? 'absolute' : 'relative';
+      await handleTimeTypeSelection(api, chatId, messageId, userId, timeType);
+      await api.answerCallbackQuery(callback_query.id);
+      return;
+    }
 
-    // if (data.startsWith('rem_repeat_')) {
-    //   const repeatType = data.substring(11) as 'none' | 'daily' | 'weekly';
-    //   await handleRepeatTypeSelection(api, chatId, messageId, userId, repeatType);
-    //   await api.answerCallbackQuery(callback_query.id);
-    //   return;
-    // }
+    if (data.startsWith('rem_repeat_')) {
+      const repeatType = data.substring(11) as 'none' | 'daily' | 'weekly';
+      await handleRepeatTypeSelection(api, chatId, messageId, userId, repeatType);
+      await api.answerCallbackQuery(callback_query.id);
+      return;
+    }
 
-    // if (data.startsWith('rem_del_')) {
-    //   const reminderId = data.substring(8);
-    //   await handleDeleteReminderConfirm(api, chatId, messageId, userId, reminderId, env);
-    //   await api.answerCallbackQuery(callback_query.id);
-    //   return;
-    // }
+    if (data.startsWith('rem_del_')) {
+      const reminderId = data.substring(8);
+      await handleDeleteReminderConfirm(api, chatId, messageId, userId, reminderId, env);
+      await api.answerCallbackQuery(callback_query.id);
+      return;
+    }
 
     return;
   }
@@ -204,15 +203,16 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<void> {
     }
 
     // 处理汇率金额输入
-    const handled = await handleExchangeAmount(api, chatId, userId, text);
+    let handled = await handleExchangeAmount(api, chatId, userId, text);
     if (handled) return;
 
-    // 已禁用提醒功能以节省 KV 配额
-    // handled = await handleReminderTimeInput(api, chatId, userId, text);
-    // if (handled) return;
+    // 处理提醒时间输入
+    handled = await handleReminderTimeInput(api, chatId, userId, text);
+    if (handled) return;
 
-    // handled = await handleReminderMessageInput(api, chatId, userId, text, env);
-    // if (handled) return;
+    // 处理提醒消息输入
+    handled = await handleReminderMessageInput(api, chatId, userId, text, env);
+    if (handled) return;
 
     // 未识别的消息
     await api.sendMessage(
@@ -245,8 +245,13 @@ async function handleCommand(
 🖥️ /vps 或 /bwh
    查询搬瓦工 VPS 状态
 
+⏰ /reminder 或 /提醒
+   提醒事项管理（添加、查看、删除）
+
 ❓ /help
    显示帮助信息
+
+<i>提醒功能已优化：每15分钟检查一次，节省配额</i>
         `.trim()
       );
       break;
@@ -265,10 +270,21 @@ async function handleCommand(
 <b>VPS 监控：</b>
 发送 /vps 或 /bwh 查询服务器状态
 
+<b>提醒事项：</b>
+1. 发送 /reminder 或 /提醒
+2. 选择操作（添加/查看/删除）
+3. 按提示设置时间和内容
+
 <b>支持的货币：</b>
 🇺🇸 USD (美元)
 🇪🇺 EUR (欧元)
 🇨🇦 CAD (加元)
+
+<b>提醒时间格式：</b>
+• 绝对时间：2025-12-25 18:00 (北京时间)
+• 相对时间：30分钟、2小时、1天
+
+<i>⚠️ 提醒精度：最多15分钟误差</i>
         `.trim()
       );
       break;
@@ -283,11 +299,10 @@ async function handleCommand(
       await handleBWHCommand(api, chatId, env);
       break;
 
-    // 已禁用提醒功能以节省 KV 配额
-    // case '/reminder':
-    // case '/提醒':
-    //   await handleReminderCommand(api, chatId);
-    //   break;
+    case '/reminder':
+    case '/提醒':
+      await handleReminderCommand(api, chatId);
+      break;
 
     default:
       await api.sendMessage(

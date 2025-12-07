@@ -10,8 +10,26 @@ function generateId(): string {
   return `reminder_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
-// 获取用户的所有提醒
+// 生成时间桶 ID（每15分钟一个桶）
+// 格式：YYYYMMDDHHmm，其中 mm 为 00/15/30/45
+function getTimeBucket(timestamp: number): string {
+  const date = new Date((timestamp + 8 * 3600) * 1000); // 转换为北京时间
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const hour = String(date.getUTCHours()).padStart(2, '0');
+  const minute = date.getUTCMinutes();
+
+  // 向下取整到最近的15分钟
+  const bucket = Math.floor(minute / 15) * 15;
+  const bucketMinute = String(bucket).padStart(2, '0');
+
+  return `${year}${month}${day}${hour}${bucketMinute}`;
+}
+
+// 获取用户的所有提醒（扫描所有时间桶中该用户的提醒）
 async function getUserReminders(env: Env, userId: number): Promise<Reminder[]> {
+  // 使用用户前缀扫描（跨时间桶）
   const listResult = await env.REMINDERS_KV.list({ prefix: `user_${userId}_` });
   const reminders: Reminder[] = [];
 
@@ -26,16 +44,42 @@ async function getUserReminders(env: Env, userId: number): Promise<Reminder[]> {
   return reminders.sort((a, b) => a.triggerTime - b.triggerTime);
 }
 
-// 保存提醒
+// 保存提醒（使用时间桶索引优化）
 async function saveReminder(env: Env, reminder: Reminder): Promise<void> {
-  const key = `user_${reminder.userId}_${reminder.id}`;
-  await env.REMINDERS_KV.put(key, JSON.stringify(reminder));
+  const timeBucket = getTimeBucket(reminder.triggerTime);
+  // 新格式：time_{bucket}_user_{userId}_{id}
+  // 也保存一份用户索引：user_{userId}_{id}（方便查询用户所有提醒）
+  const timeKey = `time_${timeBucket}_user_${reminder.userId}_${reminder.id}`;
+  const userKey = `user_${reminder.userId}_${reminder.id}`;
+  const data = JSON.stringify(reminder);
+
+  // 同时写入两个索引
+  await Promise.all([
+    env.REMINDERS_KV.put(timeKey, data),
+    env.REMINDERS_KV.put(userKey, data)
+  ]);
 }
 
-// 删除提醒
+// 删除提醒（需要删除两个索引）
 async function deleteReminder(env: Env, userId: number, reminderId: string): Promise<void> {
-  const key = `user_${userId}_${reminderId}`;
-  await env.REMINDERS_KV.delete(key);
+  const userKey = `user_${userId}_${reminderId}`;
+
+  // 先读取提醒数据以获取时间桶信息
+  const reminderJson = await env.REMINDERS_KV.get(userKey);
+  if (reminderJson) {
+    const reminder: Reminder = JSON.parse(reminderJson);
+    const timeBucket = getTimeBucket(reminder.triggerTime);
+    const timeKey = `time_${timeBucket}_user_${userId}_${reminderId}`;
+
+    // 删除两个索引
+    await Promise.all([
+      env.REMINDERS_KV.delete(timeKey),
+      env.REMINDERS_KV.delete(userKey)
+    ]);
+  } else {
+    // 如果用户索引不存在，只删除用户 key
+    await env.REMINDERS_KV.delete(userKey);
+  }
 }
 
 // 解析相对时间（如：30分钟、2小时、1天）
@@ -395,40 +439,55 @@ export async function handleDeleteReminderConfirm(
   );
 }
 
-// Cron 任务：检查并发送到期的提醒
+// Cron 任务：检查并发送到期的提醒（优化版：只扫描当前和前一个时间桶）
 export async function checkAndSendReminders(env: Env): Promise<void> {
   const api = new TelegramAPI(env.BOT_TOKEN);
   const now = Math.floor(Date.now() / 1000);
 
-  // 获取所有提醒
-  const listResult = await env.REMINDERS_KV.list();
+  // 获取当前时间桶和前一个时间桶（防止边界遗漏）
+  const currentBucket = getTimeBucket(now);
+  const previousBucket = getTimeBucket(now - 15 * 60); // 前15分钟
 
-  for (const key of listResult.keys) {
-    const reminderJson = await env.REMINDERS_KV.get(key.name);
-    if (!reminderJson) continue;
+  const bucketsToCheck = [currentBucket, previousBucket];
+  const processedKeys = new Set<string>(); // 防止重复处理
 
-    const reminder: Reminder = JSON.parse(reminderJson);
+  for (const bucket of bucketsToCheck) {
+    // 只扫描特定时间桶的提醒
+    const listResult = await env.REMINDERS_KV.list({ prefix: `time_${bucket}_` });
 
-    // 检查是否到期（允许1分钟误差）
-    if (reminder.triggerTime <= now && reminder.triggerTime > now - 60) {
-      // 发送提醒
-      await api.sendMessage(
-        reminder.chatId,
-        `⏰ <b>提醒</b>\n\n${reminder.message}`
-      );
+    for (const key of listResult.keys) {
+      // 跳过已处理的 key
+      if (processedKeys.has(key.name)) continue;
+      processedKeys.add(key.name);
 
-      // 处理重复提醒
-      if (reminder.repeat === 'daily') {
-        // 每天重复：增加 24 小时
-        reminder.triggerTime += 86400;
-        await saveReminder(env, reminder);
-      } else if (reminder.repeat === 'weekly') {
-        // 每周重复：增加 7 天
-        reminder.triggerTime += 604800;
-        await saveReminder(env, reminder);
-      } else {
-        // 一次性提醒：删除
-        await env.REMINDERS_KV.delete(key.name);
+      const reminderJson = await env.REMINDERS_KV.get(key.name);
+      if (!reminderJson) continue;
+
+      const reminder: Reminder = JSON.parse(reminderJson);
+
+      // 检查是否到期（允许15分钟误差）
+      if (reminder.triggerTime <= now && reminder.triggerTime > now - 15 * 60) {
+        // 发送提醒
+        await api.sendMessage(
+          reminder.chatId,
+          `⏰ <b>提醒</b>\n\n${reminder.message}`
+        );
+
+        // 处理重复提醒
+        if (reminder.repeat === 'daily') {
+          // 每天重复：删除旧的，创建新的
+          await deleteReminder(env, reminder.userId, reminder.id);
+          reminder.triggerTime += 86400;
+          await saveReminder(env, reminder);
+        } else if (reminder.repeat === 'weekly') {
+          // 每周重复：删除旧的，创建新的
+          await deleteReminder(env, reminder.userId, reminder.id);
+          reminder.triggerTime += 604800;
+          await saveReminder(env, reminder);
+        } else {
+          // 一次性提醒：删除
+          await deleteReminder(env, reminder.userId, reminder.id);
+        }
       }
     }
   }

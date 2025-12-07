@@ -2,14 +2,14 @@ name = "tg-bot"
 main = "src/index.ts"
 compatibility_date = "2024-12-05"
 
-# KV Namespace (保留配置，但不再使用)
-# kv_namespaces = [
-#   { binding = "REMINDERS_KV", id = "1e5cfcf7ae394121aa40cf2a477bf018" }
-# ]
+# KV Namespace for storing reminders (优化版：时间索引)
+kv_namespaces = [
+  { binding = "REMINDERS_KV", id = "1e5cfcf7ae394121aa40cf2a477bf018" }
+]
 
-# Cron Trigger - 已禁用定时提醒功能以节省 KV 配额
-# [triggers]
-# crons = ["* * * * *"]
+# Cron Trigger - 每15分钟检查一次提醒（优化版，节省 KV 配额）
+[triggers]
+crons = ["*/15 * * * *"]
 
 # 环境变量将通过 wrangler secret put 命令设置
 # BOT_TOKEN
